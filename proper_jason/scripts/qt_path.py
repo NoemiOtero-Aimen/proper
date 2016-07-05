@@ -5,13 +5,15 @@ import json
 import rospy
 import rospkg
 import numpy as np
+import tf.transformations as tf
+
 #from proper_abb.msg import MsgRobotCommand
 from proper_abb.srv import SrvRobotCommand
-# from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
-from visualization_msgs.msg import MarkerArray
 
-from markers import LinesMarker
-from markers import ArrowMarker
+from visualization_msgs.msg import MarkerArray
+from markers import PathMarkers
+
+from urdf_parser_py.urdf import URDF
 
 from python_qt_binding import loadUi
 from python_qt_binding import QtGui
@@ -35,7 +37,10 @@ class QtPath(QtGui.QWidget):
         except:
             rospy.loginfo('ERROR connecting to service robot_send_command.')
         #self.pub = rospy.Publisher(
-        #    'robot_command_json', MsgRobotCommand, queue_size=10)
+        #    import tf'robot_command_json', MsgRobotCommand, queue_size=10)
+
+        self.pub_marker_array = rospy.Publisher(
+            'visualization_marker_array', MarkerArray, queue_size=10)
 
         self.btnLoadPath.clicked.connect(self.btnLoadPathClicked)
         icon = QtGui.QIcon.fromTheme('document-open')
@@ -55,33 +60,31 @@ class QtPath(QtGui.QWidget):
         self.listWidgetPoses.itemSelectionChanged.connect(self.lstPosesClicked)
         self.listWidgetPoses.itemDoubleClicked.connect(self.qlistDoubleClicked)
 
-        self.jason = Jason()
         self.ok_command = "OK"
+        self.path_markers = PathMarkers()
 
-        self.offset_position = 100
-        self.quat = [0, np.sin(np.deg2rad(45)), 0, np.cos(np.deg2rad(45))]
-        self.quat_inv = [0, -np.sin(np.deg2rad(45)), 0, np.cos(np.deg2rad(45))]
+        # Parse robot description file
+        robot = URDF.from_parameter_server()
+        tcp = robot.joint_map['tcp0']
+        workobject = robot.joint_map['workobject']
 
-        self.pub_marker_array = rospy.Publisher(
-            'visualization_marker_array', MarkerArray, queue_size=10)
+        tool = [tcp.origin.position,
+                list(tf.quaternion_from_euler(*tcp.origin.rotation))]
+        print 'Tool:', tool
+        workobject = [workobject.origin.position,
+                      list(tf.quaternion_from_euler(*workobject.origin.rotation))]
+        print 'Workobject:', workobject
+        powder = rospy.get_param('/powder')
+        print 'Powder:', powder
+        process = rospy.get_param('/process')
+        print 'Process:', process
 
-        self.marker_array = MarkerArray()
-
-        self.lines = LinesMarker()
-        self.lines.set_size(0.005)
-        self.lines.set_color((1, 0, 0, 1))
-        self.lines.set_frame('/workobject')
-        self.marker_array.markers.append(self.lines.marker)
-
-        self.arrow = ArrowMarker(0.1)
-        self.arrow.set_color((0, 0, 1, 1))
-        self.arrow.set_frame('/workobject')
-        # self.arrow.set_position((0.2, 0.2, 0.2))
-        # self.arrow.set_orientation((0, 0, 0, 1))
-        self.marker_array.markers.append(self.arrow.marker)
-
-        for id, m in enumerate(self.marker_array.markers):
-            m.id = id
+        self.jason = Jason()
+        self.jason.set_tool(tool)
+        self.jason.set_workobject(workobject)
+        self.jason.set_powder(
+            powder['carrier'], powder['stirrer'], powder['turntable'])
+        self.jason.set_process(process['speed'], process['power'])
 
         self.tmrRunPath = QtCore.QTimer(self)
         self.tmrRunPath.timeout.connect(self.timeRunPathEvent)
@@ -108,16 +111,19 @@ class QtPath(QtGui.QWidget):
         else:
             return None
 
-    def btnLoadPathClicked(self):
+    def loadCommands(self, commands):
         self.listWidgetPoses.clear()
+        [self.insertCommand(cmd) for cmd in commands]
+        self.arr = []
+        self.getMoveCommands()
+
+    def btnLoadPathClicked(self):
         filename = QtGui.QFileDialog.getOpenFileName(
             self, 'Load Path Routine', os.path.join(path, 'routines'),
             'Jason Routine Files (*.jas)')[0]
         print 'Load routine:', filename
-        cmds = self.jason.load_commands(filename)
-        [self.insertCommand(cmd) for cmd in cmds]
-        self.arr = []
-        self.getMoveCommands()
+        commands = self.jason.load_commands(filename)
+        self.loadCommands(commands)
 
     def btnSavePathClicked(self):
         filename = QtGui.QFileDialog.getSaveFileName(
@@ -170,20 +176,17 @@ class QtPath(QtGui.QWidget):
     def lstPosesClicked(self):
         row = self.listWidgetPoses.currentRow()
         item_text = self.listWidgetPoses.item(row)
-        str_item = item_text.text()
-        command = json.loads(str_item)
+        command = json.loads(item_text.text())
+        pose = None
         if 'move' in command:
             orientation = np.array([command["move"][1][1],
                                     command["move"][1][2],
                                     command["move"][1][3],
                                     command["move"][1][0]])
             position = np.array(command["move"][0]) * 0.001
-            self.arrow.set_new_position(position)
-            self.arrow.set_new_orientation(orientation)
-            self.arrow.set_color((0, 0, 1, 1))
-        else:
-            self.arrow.set_color((0, 0, 0, 0))
-        self.pub_marker_array.publish(self.marker_array)
+            pose = (position, orientation)
+        self.path_markers.set_pose(pose)
+        self.pub_marker_array.publish(self.path_markers.marker_array)
 
     def qlistDoubleClicked(self):
         row = self.listWidgetPoses.currentRow()
@@ -200,18 +203,14 @@ class QtPath(QtGui.QWidget):
     def getMoveCommands(self):
         n_row = self.listWidgetPoses.count()
         # row = self.listWidgetPoses.currentRow()
-        points = []
+        path = []
         for row in range(n_row):
             item_text = self.listWidgetPoses.item(row)
-            str_item = item_text.text()
-            comando = json.loads(str_item)
-            if 'move' in comando:
-                point = comando["move"][0]
-                points.append(point)
-        points = np.array(points) * 0.001
-        print points
-        self.lines.set_points(points)
-        self.pub_marker_array.publish(self.marker_array)
+            command = json.loads(item_text.text())
+            if 'move' in command:
+                path.append(command['move'])
+        self.path_markers.set_path(path)
+        self.pub_marker_array.publish(self.path_markers.marker_array)
 
     def sendCommand(self, command):
         rob_response = self.send_command(command)
@@ -239,6 +238,7 @@ class QtPath(QtGui.QWidget):
 
 if __name__ == "__main__":
     rospy.init_node('path_panel')
+
     app = QtGui.QApplication(sys.argv)
     qt_path = QtPath()
     qt_path.show()

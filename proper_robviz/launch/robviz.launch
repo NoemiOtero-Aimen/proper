@@ -1,12 +1,14 @@
 <launch>
     <arg name="sim" default="false" />
 
+    <rosparam command="load" file="$(find proper_robviz)/config/params.yaml" />
+
     <include file="$(find proper_workcell)/launch/workcell.launch">
       <arg name="gui" value="false" />
       <arg name="sim" value="$(arg sim)" />
     </include>
 
-    <node name="velocity" pkg="mashes_measures" type="nd_velocity.py" />
+    <node name="velocity" pkg="mashes_measures" type="nd_velocity.py" respawn="true" />
 
     <node name="robviz" pkg="proper_robviz" type="robviz.py"/>
 </launch>
