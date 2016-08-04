@@ -14,10 +14,11 @@ List of available jason commands that can be published on topic "robot_command_j
 {"workobject":[[0, 0, 0], [1, 0, 0, 0]]}
 ```
 
-- *speed*: sets the TCP linear speed in mm/s.
+- *laser*: starts (true) and stops (false) the laser equipment to be ready for
+processing.
 
 ```json
-{"speed":30}
+{"laser":true}
 ```
 
 - *power*: sets the laser power in W.
@@ -26,22 +27,42 @@ List of available jason commands that can be published on topic "robot_command_j
 {"power":1000}
 ```
 
-- *stirrer*: sets the stirrer value in %.
+- *carrier*: sets the carrier gas value in l/min.
+
 
 ```json
-{"stirrer":40}
+{"carrier":5}
 ```
 
 - *turntable*: sets the turntable value in rpm.
 
+
 ```json
-{"turntable":3}
+{"turntable":4}
 ```
 
-- *powder_start*: starts and stops the powder flow from the feeder.
+- *stirrer*: sets the stirrer value in %.
 
 ```json
-{"powder_start":1}
+{"stirrer":20}
+```
+
+- *powder*: starts (true) and stops (false) the powder flow from the feeder.
+
+```json
+{"powder":true}
+```
+
+- *wait_time*: programs a wait time interruption in seconds.
+
+```json
+{"wait_time":0.5}
+```
+
+- *speed*: sets the TCP linear speed in mm/s.
+
+```json
+{"speed":30}
 ```
 
 - *pose*: appends a single cartesian pose to the buffer, and activates or

@@ -1,83 +1,151 @@
 #!/usr/bin/env python
 import os
-import os
-import tf
 import sys
 import rospy
 import rospkg
-import rosparam
 import numpy as np
-from std_msgs.msg import String, Header
-# from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion
+
 import sensor_msgs.point_cloud2 as pc2
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import PointCloud2
+
+from visualization_msgs.msg import MarkerArray
+from markers import ScanMarkers
 
 from python_qt_binding import loadUi
 from python_qt_binding import QtGui
 from python_qt_binding import QtCore
+
+from mashes_measures.msg import MsgStatus
+
+from planning.planning import Planning
+from cloud.contours import Segmentation
+import cloud.pcd_tool as pcd_tool
+import cloud.contours as contours
 
 
 path = rospkg.RosPack().get_path('proper_cloud')
 
 
 class QtScan(QtGui.QWidget):
+    accepted = QtCore.pyqtSignal(list)
+
     def __init__(self, parent=None):
         QtGui.QWidget.__init__(self, parent)
         loadUi(os.path.join(path, 'resources', 'scan.ui'), self)
 
-        self.btnRecord.clicked.connect(self.btnRecordClicked)
-
-        self.recording = False
-        cloud_topic = rospy.get_param('~cloud', '/ueye/cloud')
         rospy.Subscriber(
-            cloud_topic, PointCloud2, self.cbPointCloud, queue_size=1)
+            '/ueye/scan', PointCloud2, self.cbPointCloud, queue_size=5)
+        rospy.Subscriber(
+            '/supervisor/status', MsgStatus, self.cbStatus, queue_size=1)
 
-        self.listener = tf.TransformListener()
-        self.filename = '/home/jraraujo/test.xyz'
+        self.pub_marker_array = rospy.Publisher(
+            'visualization_marker_array', MarkerArray, queue_size=10)
 
-    def point_cloud_to_world(self, stamp, points3d):
-        """Transforms the point cloud in camera coordinates to the world frame."""
-        self.listener.waitForTransform("/world", "/camera0", stamp, rospy.Duration(1.0))
-        (position, quaternion) = self.listener.lookupTransform("/world", "/camera0", stamp)
-        matrix = tf.transformations.quaternion_matrix(quaternion)
-        matrix[:3, 3] = position
-        points = np.zeros((len(points3d), 3), dtype=np.float32)
-        for k, point3d in enumerate(points3d):
-            point = np.ones(4)
-            point[:3] = point3d
-            points[k] = np.dot(matrix, point)[:3]
-        return points
+        self.btnPlane.clicked.connect(self.btnPlaneClicked)
+        self.btnRecord.clicked.connect(self.btnRecordClicked)
+        self.btnZmap.clicked.connect(self.btnZmapClicked)
+        self.btnScan.clicked.connect(self.btnScanClicked)
 
-    def cbPointCloud(self, data):
+        self.sbPositionX.valueChanged.connect(self.changePosition)
+        self.sbPositionY.valueChanged.connect(self.changePosition)
+        self.sbPositionZ.valueChanged.connect(self.changePosition)
+
+        self.sbSizeX.valueChanged.connect(self.changeSize)
+        self.sbSizeY.valueChanged.connect(self.changeSize)
+        self.sbSizeZ.valueChanged.connect(self.changeSize)
+
+        self.filename = ''
+        self.status = False
+        self.running = False
+        self.recording = False
+
+        self.path = []
+        self.scan_markers = None
+        self.planning = Planning()
+        self.position = np.array([0, 0, 10])
+        self.size = np.array([100, 200, 0])
+
+    def cbPointCloud(self, msg_cloud):
         if self.recording:
-            cloud_msg = data
-            stamp = data.header.stamp
-            points = pc2.read_points(cloud_msg, skip_nans=False)
-            points3d = []
-            for point in points:
-                points3d.append(point)
-            points3d = np.float32(points3d)
-            #TODO: Record only when the camera is moving.
-            points3d = self.point_cloud_to_world(stamp, points3d)
+            points = pc2.read_points(msg_cloud, skip_nans=False)
+            points3d = np.float32([point for point in points])
+            print self.filename
             with open(self.filename, 'a') as f:
                 np.savetxt(f, points3d, fmt='%.6f')
 
-    def btnRecordClicked(self):
-        if self.recording:
+    def cbStatus(self, msg_status):
+        status = msg_status.running
+        if not self.status and status:
+            if self.running:
+                self.recording = True
+                self.btnRecord.setText('Recording...')
+        elif self.status and not status:
+            self.running = False
             self.recording = False
-            self.btnRecord.setText('Record cloud')
+            self.btnRecord.setText('Record Cloud')
+        self.status = status
+
+    def updatePlane(self):
+        (x, y, z), (w, h, t) = self.position, self.size
+        plane = np.array([[x, y, z], [x+w, y, z], [x+w, y+h, z], [x, y+h, z]])
+        slice = [plane - np.array([0, 50, 0])]  # laser stripe offset
+        path = self.planning.get_path_from_slices(
+            [slice], track_distance=100, focus=100)
+        self.path = [[pos, ori] for pos, ori, bol in path]
+        self.scan_markers.set_plane_size(self.size)
+        self.scan_markers.set_plane_position(self.position)
+        self.scan_markers.set_path(self.path)
+        self.pub_marker_array.publish(self.scan_markers.marker_array)
+
+    def changePosition(self):
+        self.position = np.array([self.sbPositionX.value(),
+                                  self.sbPositionY.value(),
+                                  self.sbPositionZ.value()])
+        self.updatePlane()
+
+    def changeSize(self):
+        self.size = np.array([self.sbSizeX.value(),
+                              self.sbSizeY.value(),
+                              self.sbSizeZ.value()])
+        self.updatePlane()
+
+    def btnPlaneClicked(self):
+        self.scan_markers = ScanMarkers()
+        self.updatePlane()
+
+    def btnRecordClicked(self):
+        if self.running:
+            self.running = False
+            self.btnRecord.setText('Record Cloud')
         else:
             try:
                 filename = QtGui.QFileDialog.getSaveFileName(
-                    self, 'Save file', os.path.join(path, 'data', 'test.xyz'), 'Point Cloud Files (*.xyz)')[0]
+                    self, 'Save file', os.path.join(path, 'data', 'test.xyz'),
+                    'Point Cloud Files (*.xyz)')[0]
                 self.filename = filename
-                print 'Recording %s ...' % filename
                 with open(self.filename, 'w') as f:
                     pass
-                self.recording = True
+                self.running = True
                 self.btnRecord.setText('Stop recording...')
             except:
                 pass
+
+    def btnZmapClicked(self):
+        filename = QtGui.QFileDialog.getOpenFileName(
+            self, 'Load file', os.path.join(path, 'data', 'test.xyz'),
+            'Point Cloud Files (*.xyz)')[0]
+        name, extension = os.path.splitext(filename)
+        cloud = pcd_tool.read_cloud(filename)
+        zmap = pcd_tool.zmap_from_cloud(cloud)
+        zmap = pcd_tool.fill_zmap(zmap, size=7)
+        pcd_tool.save_zmap('%s.tif' % name, zmap)
+        segmentation = Segmentation()
+        segmentation.plot_zmap(zmap)
+        slice = contours.slice_of_contours(segmentation.contours)
+        print slice
+
+    def btnScanClicked(self):
+        self.accepted.emit(self.path)
 
 
 if __name__ == "__main__":

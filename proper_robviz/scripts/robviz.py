@@ -12,6 +12,7 @@ import rviz
 
 from mashes_measures.msg import MsgVelocity
 
+from qt_data import QtData
 from qt_scan import QtScan
 from qt_param import QtParam
 from qt_part import QtPart
@@ -89,23 +90,26 @@ class MyViz(QtGui.QWidget):
         self.switchToView("Top View")
 
 
-class RobPathUI(QtGui.QMainWindow):
+class Robviz(QtGui.QMainWindow):
     def __init__(self):
-        super(RobPathUI, self).__init__()
+        super(Robviz, self).__init__()
         loadUi(os.path.join(path, 'resources', 'robviz.ui'), self)
 
         self.boxPlot.addWidget(MyViz())
 
+        self.qtData = QtData()
         self.qtScan = QtScan()
         self.qtParam = QtParam()
         self.qtPart = QtPart()
         self.qtPath = QtPath()
 
+        self.tabWidget.addTab(self.qtData, 'Data')
         self.tabWidget.addTab(self.qtScan, 'Scan')
         self.tabWidget.addTab(self.qtParam, 'Params')
         self.tabWidget.addTab(self.qtPart, 'Part')
         self.tabWidget.addTab(self.qtPath, 'Path')
 
+        self.qtScan.accepted.connect(self.qtScanAccepted)
         self.qtParam.accepted.connect(self.qtParamAccepted)
         self.qtPart.accepted.connect(self.qtPartAccepted)
 
@@ -118,6 +122,13 @@ class RobPathUI(QtGui.QMainWindow):
 
     def cbVelocity(self, msg_velocity):
         self.lblInfo.setText("Speed: %.1f mm/s" % (1000 * msg_velocity.speed))
+
+    def qtScanAccepted(self, path):
+        print 'Path:', path
+        commands = self.qtPath.jason.path2cmds(path)
+        print 'Commands:', commands
+        self.qtPath.loadCommands(commands)
+        self.tabWidget.setCurrentWidget(self.qtPath)
 
     def qtParamAccepted(self):
         self.tabWidget.setCurrentWidget(self.qtPart)
@@ -135,6 +146,6 @@ if __name__ == '__main__':
     rospy.init_node('robviz')
 
     app = QtGui.QApplication(sys.argv)
-    robpath = RobPathUI()
-    robpath.show()
+    robviz = Robviz()
+    robviz.show()
     app.exec_()
